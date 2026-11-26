@@ -1,0 +1,23 @@
+# The firmware host for Run42's `elf` guest: runs a firmware ELF on LabWired's modelled microcontroller
+# and exchanges analog inputs and register values with Run42 over stdin/stdout, one JSON object per line.
+# LabWired is the checkout scripts/fetch-labwired.sh makes (config/labwired.json pins it). Its own
+# workspace and lock file keep LabWired's dependencies and toolchain out of the Run42 workspace.
+[workspace]
+
+[package]
+name = "run42-elf-host"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+# `event-scheduler` computes timers in closed form: without it a timer runs `tick_interval` times slow.
+labwired-core = { path = "../../.cache/labwired/crates/core", features = ["event-scheduler"] }
+labwired-config = { path = "../../.cache/labwired/crates/config" }
+labwired-loader = { path = "../../.cache/labwired/crates/loader" }
+
+[profile.release]
+opt-level = 3

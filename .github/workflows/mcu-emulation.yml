@@ -1,0 +1,45 @@
+name: MCU emulation
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.100.0'
+          targets: thumbv7em-none-eabihf
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Build both hosts
+        run: |
+          python mcu-emulation/labwired/fetch.py
+          cargo build --release --locked --manifest-path mcu-emulation/labwired/Cargo.toml
+          cargo build --release --locked --manifest-path mcu-emulation/renode/Cargo.toml
+      - name: Run the same firmware on both hosts
+        run: |
+          export RUN42_RENODE="$(python mcu-emulation/renode/install.py)"
+          python mcu-emulation/conformance/test_hosts.py
+      - name: Package the tested Linux hosts
+        run: |
+          mkdir -p dist package
+          cp mcu-emulation/labwired/target/release/run42-elf-host package/
+          cp mcu-emulation/renode/target/release/run42-renode-host package/
+          cp LICENSE package/
+          cp .cache/labwired/LICENSE package/LICENSE-LabWired
+          tar -czf dist/run42-mcu-emulation-linux-x64.tar.gz -C package .
+          (cd dist && sha256sum run42-mcu-emulation-linux-x64.tar.gz > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: run42-mcu-emulation-linux-x64
+          path: dist/
+          if-no-files-found: error
