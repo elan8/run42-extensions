@@ -1,5 +1,9 @@
 mod diagnostics;
 
+// The same process allocator as the upstream rumoca binary (mimalloc).
+#[global_allocator]
+static GLOBAL: rumoca_allocator::ProcessAllocator = rumoca_allocator::ProcessAllocator;
+
 use anyhow::{bail, ensure, Result};
 use clap::{Args, Parser, Subcommand};
 use rumoca_sim::{

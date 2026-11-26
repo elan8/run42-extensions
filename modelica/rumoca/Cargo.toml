@@ -13,9 +13,19 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 rumoca = { git = "https://github.com/CogniPilot/rumoca.git", rev = "9c8c56fcd9f5ab9beb871f09bf5d9eed82971c54", default-features = false }
 rumoca-core = { git = "https://github.com/CogniPilot/rumoca.git", rev = "9c8c56fcd9f5ab9beb871f09bf5d9eed82971c54" }
+# The process allocator (mimalloc) the upstream rumoca binary installs.
+rumoca-allocator = { git = "https://github.com/CogniPilot/rumoca.git", rev = "9c8c56fcd9f5ab9beb871f09bf5d9eed82971c54" }
 rumoca-sim = { git = "https://github.com/CogniPilot/rumoca.git", rev = "9c8c56fcd9f5ab9beb871f09bf5d9eed82971c54", default-features = false, features = ["native-solvers"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [patch.crates-io]
 diffsol = { git = "https://github.com/CogniPilot/rumoca.git", rev = "9c8c56fcd9f5ab9beb871f09bf5d9eed82971c54" }
+
+# Cargo ignores a dependency workspace's profiles. Match Rumoca's own release
+# build, so the host runs at the speed of the upstream release binary.
+[profile.release]
+lto = "thin"
+
+[profile.release.build-override]
+opt-level = 3
