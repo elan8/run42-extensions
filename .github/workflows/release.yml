@@ -1,0 +1,173 @@
+name: Release build
+
+# Build every extension host for each release platform. Pull requests and manual
+# runs build and check them; a `v*` tag also publishes one archive per host and
+# platform, with SHA256SUMS.txt, as a GitHub release.
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN_VERSION: '1.100.0'
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Keep Linux on glibc 2.35, the oldest runtime Run42 supports.
+          - runner: ubuntu-22.04
+            platform: linux-x64
+            target: x86_64-unknown-linux-gnu
+            exe: ''
+            native: true
+          - runner: windows-latest
+            platform: windows-x64
+            target: x86_64-pc-windows-msvc
+            exe: .exe
+            native: true
+          - runner: macos-15
+            platform: macos-arm64
+            target: aarch64-apple-darwin
+            exe: ''
+            native: true
+          # Cross-compiled on the arm64 runner; packaged but not executed there.
+          - runner: macos-15
+            platform: macos-x64
+            target: x86_64-apple-darwin
+            exe: ''
+            native: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      PLATFORM: ${{ matrix.platform }}
+      EXE: ${{ matrix.exe }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Link the Windows C runtime statically
+        if: runner.os == 'Windows'
+        run: echo 'RUSTFLAGS=-C target-feature=+crt-static' >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.platform }}
+          cache-on-failure: true
+          workspaces: |
+            modelica/rumoca -> target
+            mcu-emulation/labwired -> target
+            mcu-emulation/renode -> target
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then version="${GITHUB_REF_NAME#v}"; else version="0.0.0-dev.${GITHUB_SHA::12}"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the pinned LabWired sources
+        run: python mcu-emulation/labwired/fetch.py
+
+      - name: Build the hosts
+        run: |
+          for manifest in modelica/rumoca mcu-emulation/labwired mcu-emulation/renode; do
+            cargo build --release --locked --target "$TARGET" --manifest-path "$manifest/Cargo.toml"
+          done
+
+      - name: Check the Rumoca host
+        if: matrix.native
+        run: |
+          host="modelica/rumoca/target/$TARGET/release/run42-rumoca-host$EXE"
+          version=$("$host" --version | tr -d '\r')
+          echo "$version"
+          [[ "$version" == *"with rumoca 0.10.4" ]]
+          python -B modelica/rumoca/benchmark.py "$host"
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          RUMOCA_REVISION: 9c8c56fcd9f5ab9beb871f09bf5d9eed82971c54
+        run: |
+          mkdir -p dist
+          package() {
+            local name="$1" dir="$2" binary="$3"; shift 3
+            local stage="package/run42-$name-$VERSION-$PLATFORM"
+            mkdir -p "$stage"
+            cp "$dir/target/$TARGET/release/$binary$EXE" "$stage/"
+            cp LICENSE "$stage/"
+            [[ $# -eq 0 ]] || cp "$@" "$stage/"
+            cp "$dir/README.md" "$stage/" 2>/dev/null || cp "$(dirname "$dir")/README.md" "$stage/"
+            if [[ "$RUNNER_OS" == Windows ]]; then
+              (cd package && 7z a -tzip "../dist/$(basename "$stage").zip" "$(basename "$stage")" >/dev/null)
+            else
+              tar -czf "dist/$(basename "$stage").tar.gz" -C package "$(basename "$stage")"
+            fi
+          }
+          # Each host carries the licenses of the upstream code it links.
+          rumoca=https://raw.githubusercontent.com/CogniPilot/rumoca/$RUMOCA_REVISION
+          mkdir -p notices
+          curl -fsSL "$rumoca/LICENSE" -o notices/rumoca-APACHE-2.0.txt
+          cp .cache/labwired/LICENSE notices/labwired-MIT.txt
+          package rumoca-host modelica/rumoca run42-rumoca-host notices/rumoca-APACHE-2.0.txt
+          package labwired-host mcu-emulation/labwired run42-elf-host notices/labwired-MIT.txt
+          package renode-host mcu-emulation/renode run42-renode-host
+          ls -l dist
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.platform }}
+          compression-level: 0
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Collect archives with checksums
+        run: |
+          mkdir release
+          cp artifacts/*/* release/
+          (cd release && sha256sum run42-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" \
+            --title "Run42 extensions $GITHUB_REF_NAME" --generate-notes
